@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.min.js
+.DS_Store
+.env
+.git/
+.husky/
+.env.*
+.env
