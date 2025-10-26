@@ -1,0 +1,188 @@
+# Semantic Versioning Management for Swifty AI Digester
+# This file manages version bumping and tagging
+
+stages:
+  - version
+
+variables:
+  VERSION_FILE: VERSION
+  RELEASE_NOTES_FILE: RELEASE_NOTES.md
+
+# Initialize version file if it doesn't exist
+version_init:
+  stage: .pre
+  image: alpine:latest
+  script:
+    - |
+      if [ ! -f $VERSION_FILE ]; then
+        echo "0.1.0" > $VERSION_FILE
+        echo "Initialized version to 0.1.0"
+      fi
+  artifacts:
+    paths:
+      - $VERSION_FILE
+    expire_in: 1 week
+  only:
+    - main
+    - develop
+  except:
+    - tags
+
+# Version bump for patch releases (automated)
+version_patch:
+  stage: version
+  image: alpine:latest
+  script:
+    - |
+      if [ -f $VERSION_FILE ]; then
+        CURRENT_VERSION=$(cat $VERSION_FILE)
+        # Bump patch version (x.y.z -> x.y.z+1)
+        NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{print $1"."$2"."$3+1}')
+        echo $NEW_VERSION > $VERSION_FILE
+        echo "Bumped version from $CURRENT_VERSION to $NEW_VERSION"
+      else
+        echo "0.1.0" > $VERSION_FILE
+        echo "Initialized version to 0.1.0"
+      fi
+  artifacts:
+    paths:
+      - $VERSION_FILE
+    expire_in: 1 week
+  only:
+    - main
+  except:
+    - tags
+    - schedules
+
+# Version bump for minor releases (manual)
+version_minor:
+  stage: version
+  image: alpine:latest
+  script:
+    - |
+      if [ -f $VERSION_FILE ]; then
+        CURRENT_VERSION=$(cat $VERSION_FILE)
+        # Bump minor version (x.y.z -> x.y+1.0)
+        NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{print $1"."$2+1".0"}')
+        echo $NEW_VERSION > $VERSION_FILE
+        echo "Bumped version from $CURRENT_VERSION to $NEW_VERSION"
+      else
+        echo "0.1.0" > $VERSION_FILE
+        echo "Initialized version to 0.1.0"
+      fi
+  artifacts:
+    paths:
+      - $VERSION_FILE
+    expire_in: 1 week
+  only:
+    - main
+  when: manual
+  except:
+    - tags
+
+# Version bump for major releases (manual)
+version_major:
+  stage: version
+  image: alpine:latest
+  script:
+    - |
+      if [ -f $VERSION_FILE ]; then
+        CURRENT_VERSION=$(cat $VERSION_FILE)
+        # Bump major version (x.y.z -> x+1.0.0)
+        NEW_VERSION=$(echo $CURRENT_VERSION | awk -F. '{print $1+1".0.0"}')
+        echo $NEW_VERSION > $VERSION_FILE
+        echo "Bumped version from $CURRENT_VERSION to $NEW_VERSION"
+      else
+        echo "0.1.0" > $VERSION_FILE
+        echo "Initialized version to 0.1.0"
+      fi
+  artifacts:
+    paths:
+      - $VERSION_FILE
+    expire_in: 1 week
+  only:
+    - main
+  when: manual
+  except:
+    - tags
+
+# Create release tag
+create_release:
+  stage: version
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git
+    - git config --global user.email "gitlab-ci@noreply.com"
+    - git config --global user.name "GitLab CI"
+  script:
+    - |
+      VERSION=$(cat $VERSION_FILE)
+      TAG_NAME="v$VERSION"
+
+      # Check if tag already exists
+      if git tag -l | grep -q "^$TAG_NAME$"; then
+        echo "Tag $TAG_NAME already exists. Skipping tag creation."
+        exit 0
+      fi
+
+      # Create annotated tag
+      git tag -a "$TAG_NAME" -m "Release version $VERSION
+
+      This release was automatically created by GitLab CI/CD.
+
+      Changes in this release:
+      $(git log --oneline --since="1 week ago" || echo "No recent commits found")"
+
+      # Push the tag
+      git push origin "$TAG_NAME"
+
+      echo "Created and pushed tag $TAG_NAME"
+  only:
+    - main
+  when: manual
+  dependencies:
+    - version_patch
+    - version_minor
+    - version_major
+
+# Generate release notes
+generate_release_notes:
+  stage: version
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git
+  script:
+    - |
+      VERSION=$(cat $VERSION_FILE)
+      echo "# Release Notes - v$VERSION" > $RELEASE_NOTES_FILE
+      echo "" >> $RELEASE_NOTES_FILE
+      echo "## Changes" >> $RELEASE_NOTES_FILE
+      echo "" >> $RELEASE_NOTES_FILE
+
+      # Get commits since last tag
+      LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+      if [ -n "$LAST_TAG" ]; then
+        git log --oneline --pretty=format:"- %s" ${LAST_TAG}..HEAD >> $RELEASE_NOTES_FILE
+      else
+        git log --oneline --pretty=format:"- %s" -n 20 >> $RELEASE_NOTES_FILE
+      fi
+
+      echo "" >> $RELEASE_NOTES_FILE
+      echo "## Deployment" >> $RELEASE_NOTES_FILE
+      echo "" >> $RELEASE_NOTES_FILE
+      echo "- Docker image: $CI_REGISTRY_IMAGE:$VERSION" >> $RELEASE_NOTES_FILE
+      echo "- Deployed to: staging, production" >> $RELEASE_NOTES_FILE
+      echo "" >> $RELEASE_NOTES_FILE
+      echo "---" >> $RELEASE_NOTES_FILE
+      echo "Generated on: $(date)" >> $RELEASE_NOTES_FILE
+  artifacts:
+    paths:
+      - $RELEASE_NOTES_FILE
+    expire_in: 1 month
+  only:
+    - main
+    - tags
+  dependencies:
+    - version_patch
+    - version_minor
+    - version_major
