@@ -139,3 +139,14 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# CI/CD artifacts and temporary files
+.coverage/
+test-reports/
+trivy-results.json
+audit-results.json
+build.env
+RELEASE_NOTES.md
+
+# Docker
+.dockerignore

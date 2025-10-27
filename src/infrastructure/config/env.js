@@ -10,6 +10,13 @@ export const config = {
     frontendUrl: process.env.FRONTEND_URL,
     apiPrefix: process.env.API_PREFIX,
   },
+  database: {
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    username: process.env.DB_USERNAME,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+  },
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME,
     apiKey: process.env.CLOUDINARY_API_KEY,
