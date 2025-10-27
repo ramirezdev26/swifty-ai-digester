@@ -32,7 +32,7 @@ class CloudinaryService {
       });
     } catch (error) {
       console.error('Error uploading to Cloudinary:', error);
-      throw new Error('Failed to upload image to cloud storage');
+      throw new Error(`Cloudinary upload failed: ${error.message}`);
     }
   }
 }

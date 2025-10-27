@@ -1,58 +1,40 @@
-import express from 'express';
-import cors from 'cors';
-import pino from 'pino';
 import dotenv from 'dotenv';
-import router from './presentation/routes/api.routes.js';
-import errorMiddleware from './presentation/middleware/error.middleware.js';
-import { initializeDatabase } from './infrastructure/persistence/initialize-database.js';
+import imageProcessingConsumer from './infrastructure/consumers/image-processing.consumer.js';
+import rabbitmqService from './infrastructure/services/rabbitmq.service.js';
 
 dotenv.config();
 
-const isDevelopment = process.env.NODE_ENV !== 'production';
-const PORT = process.env.PORT || 3000;
+async function startWorker() {
+  console.log('AI Digester starting...');
 
-const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  ...(isDevelopment && {
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        translateTime: 'SYS:standard',
-        ignore: 'pid,hostname',
-      },
-    },
-  }),
-});
+  try {
+    // Connect to RabbitMQ
+    await rabbitmqService.connect();
 
-const app = express();
+    // Start consumer
+    await imageProcessingConsumer.start();
 
-const corsOptions = {
-  origin: process.env.FRONTEND_URL,
-  credentials: true,
-  optionsSuccessStatus: 200,
-};
-
-app.use(cors(corsOptions));
-
-app.use((req, res, next) => {
-  logger.info(`${req.method} ${req.url}`);
-  logger.debug('Headers:', req.headers);
-  next();
-});
-
-app.use(express.json());
-app.use('/api', router);
-
-app.use(errorMiddleware);
-
-initializeDatabase()
-  .then(() => {
-    app.listen(PORT, () => {
-      logger.info(`Server is running on port ${PORT}`);
-    });
-  })
-  .catch((error) => {
-    logger.error('Failed to initialize database:', error);
+    console.log('AI Digester ready. Waiting for messages...');
+  } catch (error) {
+    console.error('Failed to start worker:', error);
     process.exit(1);
-  });
+  }
+}
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('Shutting down...');
+  await imageProcessingConsumer.stop();
+  await rabbitmqService.close();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('Shutting down...');
+  await imageProcessingConsumer.stop();
+  await rabbitmqService.close();
+  process.exit(0);
+});
+
+// Start the worker
+startWorker();

@@ -4,7 +4,7 @@ dotenv.config();
 
 export const config = {
   server: {
-    port: process.env.PORT,
+    port: process.env.PORT || 3000,
     nodeEnv: process.env.NODE_ENV,
     logLevel: process.env.LOG_LEVEL,
     frontendUrl: process.env.FRONTEND_URL,
@@ -18,4 +18,9 @@ export const config = {
   gemini: {
     apiKey: process.env.GEMINI_API_KEY,
   },
+  rabbitmq: {
+    url: process.env.RABBITMQ_URL,
+  },
 };
+
+export default config;
