@@ -20,6 +20,22 @@ export const config = {
   },
   rabbitmq: {
     url: process.env.RABBITMQ_URL,
+    dlxExchange: process.env.RABBITMQ_DLX_EXCHANGE,
+    messageTtl: parseInt(process.env.RABBITMQ_MESSAGE_TTL) || 300000,
+  },
+  // Retry configuration for failed message processing
+  retry: {
+    maxRetries: parseInt(process.env.MAX_RETRIES, 10) || 3,
+    delays: [
+      parseInt(process.env.RETRY_DELAY_1, 10) || 5000,  // First retry: 5 seconds
+      parseInt(process.env.RETRY_DELAY_2, 10) || 15000, // Second retry: 15 seconds
+      parseInt(process.env.RETRY_DELAY_3, 10) || 30000, // Third retry: 30 seconds
+    ],
+  },
+  // Processing configuration for image operations
+  processing: {
+    timeoutMs: parseInt(process.env.PROCESSING_TIMEOUT_MS, 10) || 60000, // 60 seconds timeout
+    prefetchCount: parseInt(process.env.PREFETCH_COUNT, 10) || 1,        // Messages per worker
   },
 };
 
