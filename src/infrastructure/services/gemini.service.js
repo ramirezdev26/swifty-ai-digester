@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { config } from '../config/env.js';
+import config from '../config/env.js';
 
 class GeminiService {
   constructor() {
@@ -63,9 +63,8 @@ class GeminiService {
   }
 
   async processImage(imageBuffer, style) {
-    Date.now();
     try {
-      if (!this.model) throw new Error('Model not initialized.');
+      if (!this.model) throw new Error('Gemini model not initialized.');
 
       const mimeType = this.detectImageFormat(imageBuffer);
       const base64Data = imageBuffer.toString('base64');
@@ -100,7 +99,7 @@ class GeminiService {
       }
     } catch (error) {
       console.error('Error processing image with Gemini:', error);
-      return imageBuffer;
+      throw new Error(`Gemini processing failed: ${error.message}`);
     }
   }
 
