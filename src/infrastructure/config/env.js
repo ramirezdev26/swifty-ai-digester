@@ -20,8 +20,11 @@ export const config = {
   },
   rabbitmq: {
     url: process.env.RABBITMQ_URL,
-    dlxExchange: process.env.RABBITMQ_DLX_EXCHANGE,
-    messageTtl: parseInt(process.env.RABBITMQ_MESSAGE_TTL) || 300000,
+    exchange: process.env.RABBITMQ_EXCHANGE || 'pixpro.processing',
+    dlxExchange: process.env.RABBITMQ_DLX_EXCHANGE || 'pixpro.dlx',
+    partitions: parseInt(process.env.RABBITMQ_PARTITIONS, 10) || 3,
+    messageTtl: parseInt(process.env.RABBITMQ_MESSAGE_TTL, 10) || 300000,
+    dlqTtl: parseInt(process.env.RABBITMQ_DLQ_TTL, 10) || 86400000,
   },
   // Retry configuration for failed message processing
   retry: {

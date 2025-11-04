@@ -1,5 +1,6 @@
 import amqp from 'amqplib';
 import config from '../config/env.js';
+import { setupRabbitMQInfrastructure } from './rabbitmq-setup.service.js';
 
 class RabbitMQService {
   constructor() {
@@ -16,6 +17,9 @@ class RabbitMQService {
       try {
         this.connection = await amqp.connect(config.rabbitmq.url);
         this.channel = await this.connection.createChannel();
+
+        // Setup infrastructure with exact same config as API
+        await setupRabbitMQInfrastructure(this.channel);
 
         this.connection.on('error', (err) => {
           console.error('RabbitMQ connection error:', err.message);
