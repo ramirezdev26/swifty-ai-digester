@@ -23,12 +23,6 @@ class ImageProcessingConsumer {
     for (const partition of partitions) {
       const queueName = `image.processing.partition.${partition}`;
 
-      // Assert queue with DLQ configuration
-      await this.#channel.assertQueue(queueName, {
-        durable: true,
-        deadLetterExchange: 'pixpro.dlx',
-        deadLetterRoutingKey: 'image.processing.dlq',
-      });
 
       // One message per worker for better load distribution
       await this.#channel.prefetch(config.processing.prefetchCount);
