@@ -67,6 +67,7 @@ class ImageProcessingConsumer {
       // Publish success event
       await this.#publishEvent('ImageProcessed', {
         ...result,
+        userId: payload.userId,
         correlationId: eventId,
       });
 
@@ -95,7 +96,8 @@ class ImageProcessingConsumer {
           error: error.message,
           errorCode: this.#determineErrorCode(error),
           retryCount: retryCount,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          userId: payload.userId,
         });
 
         // NACK without requeue -> goes to DLQ via DLX

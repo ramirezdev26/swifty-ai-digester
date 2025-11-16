@@ -4,7 +4,7 @@ import config from '../config/env.js';
 class GeminiService {
   constructor() {
     this.genAI = new GoogleGenerativeAI(config.gemini.apiKey);
-    this.modelName = 'gemini-2.0-flash-preview-image-generation';
+    this.modelName = 'gemini-2.5-flash-image';
     this.temperature = 0.4;
 
     const generationConfig = {
