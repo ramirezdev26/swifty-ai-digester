@@ -157,19 +157,27 @@ class ImageProcessingConsumer {
   }
 
   async #publishEvent(eventType, payload) {
+    const event = {
+      eventType,
+      eventId: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      timestamp: new Date().toISOString(),
+      payload,
+    };
+
     try {
-      await this.rabbitmqService.publishToQueue('status_updates', {
-        eventType,
-        eventId: `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        timestamp: new Date().toISOString(),
-        version: '1.0',
-        payload,
+      const RESULT_EXCHANGE = 'image.results'; // Fanout exchange
+
+      // Ensure exchange exists
+      await this.#channel.assertExchange(RESULT_EXCHANGE, 'fanout', { durable: true });
+
+      // Publish to exchange (fanout duplicates to all bound queues)
+      this.#channel.publish(RESULT_EXCHANGE, '', Buffer.from(JSON.stringify(event)), {
+        persistent: true,
       });
 
       console.log(`[Event Published] ${eventType}`, { imageId: payload.imageId });
     } catch (error) {
-      console.error(`[Event Publish Error] Failed to publish ${eventType}:`, error.message);
-      // Don't throw - event publishing failure shouldn't affect message processing
+      console.error(`[PublishEvent] Failed to publish ${eventType}:`, error.message);
     }
   }
 

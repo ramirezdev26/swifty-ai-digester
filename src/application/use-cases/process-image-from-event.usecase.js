@@ -34,16 +34,22 @@ class ProcessImageFromEventUseCase {
 
   async processImagePipeline(imageId, originalImageUrl, style, startTime) {
     // 1. Download image from Cloudinary URL
+    console.log(`[Processing] Step 1/3 - Downloading image: ${imageId}`);
     const imageBuffer = await this.downloadImageFromUrl(originalImageUrl);
+    console.log(`[Processing] Downloaded ${imageBuffer.length} bytes for image: ${imageId}`);
 
     // 2. Process with Gemini (use existing service)
+    console.log(`[Processing] Step 2/3 - Processing with Gemini (style: ${style}): ${imageId}`);
     const processedBuffer = await this.geminiService.processImage(imageBuffer, style);
+    console.log(`[Processing] Gemini processing complete for image: ${imageId}`);
 
     // 3. Upload to Cloudinary (use existing service)
+    console.log(`[Processing] Step 3/3 - Uploading processed image: ${imageId}`);
     const result = await this.cloudinaryService.uploadImage(processedBuffer, {
       public_id: `processed_${imageId}_${Date.now()}`,
       folder: 'swifty-processed-images',
     });
+    console.log(`[Processing] Uploaded to Cloudinary: ${result.secure_url}`);
 
     // 4. Return success data
     return {
