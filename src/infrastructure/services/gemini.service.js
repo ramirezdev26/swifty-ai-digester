@@ -1,10 +1,10 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { config } from '../config/env.js';
+import config from '../config/env.js';
 
 class GeminiService {
   constructor() {
     this.genAI = new GoogleGenerativeAI(config.gemini.apiKey);
-    this.modelName = 'gemini-2.0-flash-preview-image-generation';
+    this.modelName = 'gemini-2.5-flash-image';
     this.temperature = 0.4;
 
     const generationConfig = {
@@ -63,9 +63,8 @@ class GeminiService {
   }
 
   async processImage(imageBuffer, style) {
-    Date.now();
     try {
-      if (!this.model) throw new Error('Model not initialized.');
+      if (!this.model) throw new Error('Gemini model not initialized.');
 
       const mimeType = this.detectImageFormat(imageBuffer);
       const base64Data = imageBuffer.toString('base64');
@@ -100,7 +99,7 @@ class GeminiService {
       }
     } catch (error) {
       console.error('Error processing image with Gemini:', error);
-      return imageBuffer;
+      throw new Error(`Gemini processing failed: ${error.message}`);
     }
   }
 

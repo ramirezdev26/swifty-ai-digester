@@ -4,7 +4,7 @@ dotenv.config();
 
 export const config = {
   server: {
-    port: process.env.PORT,
+    port: process.env.PORT || 3000,
     nodeEnv: process.env.NODE_ENV,
     logLevel: process.env.LOG_LEVEL,
     frontendUrl: process.env.FRONTEND_URL,
@@ -25,4 +25,28 @@ export const config = {
   gemini: {
     apiKey: process.env.GEMINI_API_KEY,
   },
+  rabbitmq: {
+    url: process.env.RABBITMQ_URL,
+    exchange: process.env.RABBITMQ_EXCHANGE || 'pixpro.processing',
+    dlxExchange: process.env.RABBITMQ_DLX_EXCHANGE || 'pixpro.dlx',
+    partitions: parseInt(process.env.RABBITMQ_PARTITIONS, 10) || 3,
+    messageTtl: parseInt(process.env.RABBITMQ_MESSAGE_TTL, 10) || 300000,
+    dlqTtl: parseInt(process.env.RABBITMQ_DLQ_TTL, 10) || 86400000,
+  },
+  // Retry configuration for failed message processing
+  retry: {
+    maxRetries: parseInt(process.env.MAX_RETRIES, 10) || 3,
+    delays: [
+      parseInt(process.env.RETRY_DELAY_1, 10) || 5000,  // First retry: 5 seconds
+      parseInt(process.env.RETRY_DELAY_2, 10) || 15000, // Second retry: 15 seconds
+      parseInt(process.env.RETRY_DELAY_3, 10) || 30000, // Third retry: 30 seconds
+    ],
+  },
+  // Processing configuration for image operations
+  processing: {
+    timeoutMs: parseInt(process.env.PROCESSING_TIMEOUT_MS, 10) || 60000, // 60 seconds timeout
+    prefetchCount: parseInt(process.env.PREFETCH_COUNT, 10) || 1,        // Messages per worker
+  },
 };
+
+export default config;
