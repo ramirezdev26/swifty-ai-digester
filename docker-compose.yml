@@ -1,0 +1,55 @@
+services:
+  swifty-ai-digester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${DIGESTER_PORT:-3000}:3000"
+    environment:
+      # Application Configuration
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=${PORT:-3000}
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
+
+      # Cloudinary Configuration
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME:-demo-cloud}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY:-demo-key}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET:-demo-secret}
+
+      # Firebase Configuration
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-demo-project}
+      - FIREBASE_PRIVATE_KEY=${FIREBASE_PRIVATE_KEY:-demo-key}
+      - FIREBASE_CLIENT_EMAIL=${FIREBASE_CLIENT_EMAIL:-demo@demo.com}
+      - FIREBASE_DATABASE_URL=${FIREBASE_DATABASE_URL:-https://demo.firebaseio.com}
+      - FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET:-demo.appspot.com}
+
+      # Google AI Configuration
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY:-demo-key}
+
+      # Database Configuration
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USERNAME=${DB_USERNAME:-digester_user}
+      - DB_PASSWORD=${DB_PASSWORD:-digester_password}
+      - DB_NAME=${DB_NAME:-digester_db}
+
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      # Database connection settings
+      - DB_CONNECTION_RETRIES=${DB_CONNECTION_RETRIES:-15}
+      - DB_CONNECTION_TIMEOUT=${DB_CONNECTION_TIMEOUT:-5000}
+
+    volumes:
+      - ./src:/app/src
+    networks:
+      - digester-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  digester-network:
+    driver: bridge
