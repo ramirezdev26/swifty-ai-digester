@@ -1,6 +1,7 @@
 import amqp from 'amqplib';
 import config from '../config/env.js';
 import { setupRabbitMQInfrastructure } from './rabbitmq-setup.service.js';
+import { logger } from '../logger/pino.config.js';
 
 class RabbitMQService {
   constructor() {
@@ -13,35 +14,77 @@ class RabbitMQService {
   async connect() {
     let retries = 0;
 
+    logger.info({
+      event: 'rabbitmq.connection.attempting',
+      url: config.rabbitmq.url.replace(/:[^:@]+@/, ':****@'), // Hide password
+      maxRetries: this.maxRetries
+    }, 'Attempting to connect to RabbitMQ...');
+
     while (retries < this.maxRetries) {
       try {
         this.connection = await amqp.connect(config.rabbitmq.url);
         this.channel = await this.connection.createChannel();
 
+        logger.info({
+          event: 'rabbitmq.channel.created'
+        }, 'RabbitMQ channel created successfully');
+
         // Setup infrastructure with exact same config as API
         await setupRabbitMQInfrastructure(this.channel);
 
         this.connection.on('error', (err) => {
-          console.error('RabbitMQ connection error:', err.message);
+          logger.error({
+            event: 'rabbitmq.connection.error',
+            error: {
+              message: err.message,
+              code: err.code
+            }
+          }, `RabbitMQ connection error: ${err.message}`);
         });
 
         this.connection.on('close', () => {
-          console.error('RabbitMQ connection closed');
+          logger.warn({
+            event: 'rabbitmq.connection.closed'
+          }, 'RabbitMQ connection closed');
         });
 
-        console.log('Connected to RabbitMQ');
+        logger.info({
+          event: 'rabbitmq.connection.success',
+          exchange: config.rabbitmq.exchange,
+          partitions: config.rabbitmq.partitions
+        }, 'Connected to RabbitMQ successfully');
+
         return;
       } catch (error) {
         retries++;
-        console.error(
-          `RabbitMQ connection attempt ${retries}/${this.maxRetries} failed:`,
-          error.message
-        );
+        logger.error({
+          event: 'rabbitmq.connection.failed',
+          attempt: retries,
+          maxRetries: this.maxRetries,
+          error: {
+            message: error.message,
+            code: error.code
+          }
+        }, `RabbitMQ connection attempt ${retries}/${this.maxRetries} failed: ${error.message}`);
 
         if (retries < this.maxRetries) {
+          logger.info({
+            event: 'rabbitmq.connection.retry',
+            delayMs: this.retryDelay,
+            nextAttempt: retries + 1
+          }, `Retrying in ${this.retryDelay}ms...`);
+
           await new Promise((resolve) => setTimeout(resolve, this.retryDelay));
         } else {
-          throw new Error(`Failed to connect to RabbitMQ after ${this.maxRetries} attempts`);
+          const finalError = new Error(`Failed to connect to RabbitMQ after ${this.maxRetries} attempts`);
+          logger.fatal({
+            event: 'rabbitmq.connection.fatal',
+            attempts: retries,
+            error: {
+              message: finalError.message
+            }
+          }, finalError.message);
+          throw finalError;
         }
       }
     }
@@ -77,14 +120,26 @@ class RabbitMQService {
 
   async close() {
     try {
+      logger.info({
+        event: 'rabbitmq.closing'
+      }, 'Closing RabbitMQ connection...');
+
       if (this.channel) {
         await this.channel.close();
+        logger.debug({ event: 'rabbitmq.channel.closed' }, 'RabbitMQ channel closed');
       }
       if (this.connection) {
         await this.connection.close();
+        logger.info({ event: 'rabbitmq.connection.closed' }, 'RabbitMQ connection closed successfully');
       }
     } catch (error) {
-      console.error('Error closing RabbitMQ connection:', error.message);
+      logger.error({
+        event: 'rabbitmq.close.error',
+        error: {
+          message: error.message,
+          code: error.code
+        }
+      }, `Error closing RabbitMQ connection: ${error.message}`);
     }
   }
 }

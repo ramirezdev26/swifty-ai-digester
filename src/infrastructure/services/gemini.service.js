@@ -1,5 +1,11 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import config from '../config/env.js';
+import { logger } from '../logger/pino.config.js';
+import {
+  logGeminiRequestStarted,
+  logGeminiRequestFailed
+} from '../logger/image-processing-logger.js';
+import crypto from 'crypto';
 
 class GeminiService {
   constructor() {
@@ -63,13 +69,26 @@ class GeminiService {
   }
 
   async processImage(imageBuffer, style) {
+    const requestId = crypto.randomUUID();
+    const geminiLogger = logger.child({ requestId, service: 'gemini-ai' });
+
     try {
-      if (!this.model) throw new Error('Gemini model not initialized.');
+      if (!this.model) {
+        const error = new Error('Gemini model not initialized.');
+        geminiLogger.error({
+          event: 'gemini.initialization.failed',
+          error: { message: error.message }
+        }, 'Gemini model not initialized');
+        throw error;
+      }
 
       const mimeType = this.detectImageFormat(imageBuffer);
       const base64Data = imageBuffer.toString('base64');
 
+      logGeminiRequestStarted(geminiLogger, style, imageBuffer.length);
+
       const prompt = `Transform this image into a ${style}. Return the edited image.`;
+      const startTime = Date.now();
 
       const result = await this.model.generateContent({
         contents: [
@@ -89,17 +108,45 @@ class GeminiService {
       });
 
       const resp = await result.response;
+      const duration = Date.now() - startTime;
       const { imageBase64 } = GeminiService.extractTextAndImage(resp);
 
       if (imageBase64) {
+        geminiLogger.info({
+          event: 'gemini.request.completed',
+          duration,
+          style,
+          model: this.modelName,
+          hasImage: true
+        }, `Gemini AI processing completed in ${duration}ms`);
+
         return Buffer.from(imageBase64, 'base64');
       } else {
-        console.warn('No processed image returned from Gemini, using original');
+        geminiLogger.warn({
+          event: 'gemini.no_image_returned',
+          duration,
+          style,
+          model: this.modelName
+        }, 'No processed image returned from Gemini, using original');
+
         return imageBuffer;
       }
     } catch (error) {
-      console.error('Error processing image with Gemini:', error);
-      throw new Error(`Gemini processing failed: ${error.message}`);
+      // Mark retryable errors
+      if (
+        error.message?.includes('RATE_LIMIT') ||
+        error.message?.includes('RESOURCE_EXHAUSTED') ||
+        error.message?.includes('429') ||
+        error.code === 'RATE_LIMIT_EXCEEDED' ||
+        error.code === 'RESOURCE_EXHAUSTED'
+      ) {
+        error.retryable = true;
+        error.code = 'RATE_LIMIT_EXCEEDED';
+      }
+
+      logGeminiRequestFailed(geminiLogger, error, style);
+
+      throw new Error(`GEMINI_TIMEOUT: ${error.message}`);
     }
   }
 
@@ -111,8 +158,20 @@ class GeminiService {
           responseModalities: ['TEXT', 'IMAGE'],
         },
       });
+      logger.info({
+        event: 'gemini.connection.test.success',
+        model: this.modelName
+      }, 'Gemini AI connection test successful');
       return true;
-    } catch (_) {
+    } catch (error) {
+      logger.error({
+        event: 'gemini.connection.test.failed',
+        model: this.modelName,
+        error: {
+          message: error.message,
+          type: error.constructor?.name
+        }
+      }, 'Gemini AI connection test failed');
       return false;
     }
   }

@@ -1,6 +1,8 @@
 import rabbitmqService from '../services/rabbitmq.service.js';
 import processImageUseCase from '../../application/use-cases/process-image-from-event.usecase.js';
 import config from '../config/env.js';
+import { logger } from '../logger/pino.config.js';
+import { logEventPublished } from '../logger/image-processing-logger.js';
 
 class ImageProcessingConsumer {
   #channel;
@@ -18,22 +20,34 @@ class ImageProcessingConsumer {
     // Consume from ALL 3 partition queues in parallel
     const partitions = [0, 1, 2];
 
-    console.log('Starting consumer for partitioned queues...');
+    logger.info({
+      event: 'consumer.startup.started',
+      partitions,
+      prefetchCount: config.processing.prefetchCount
+    }, 'Starting consumer for partitioned queues...');
 
     for (const partition of partitions) {
       const queueName = `image.processing.partition.${partition}`;
 
-
       // One message per worker for better load distribution
       await this.#channel.prefetch(config.processing.prefetchCount);
 
-      console.log(`[Partition ${partition}] Queue configured: ${queueName}`);
+      logger.info({
+        event: 'consumer.partition.configured',
+        partition,
+        queueName,
+        prefetchCount: config.processing.prefetchCount
+      }, `[Partition ${partition}] Queue configured: ${queueName}`);
 
       // Start consuming from this partition queue
       await this.#consumeFromQueue(queueName);
     }
 
-    console.log('Consumer started for all partitions');
+    logger.info({
+      event: 'consumer.startup.completed',
+      partitions,
+      status: 'ready'
+    }, 'Consumer started for all partitions');
   }
 
   async #consumeFromQueue(queueName) {
@@ -43,7 +57,10 @@ class ImageProcessingConsumer {
       { noAck: false }
     );
 
-    console.log(`[Consumer] Listening on queue: ${queueName}`);
+    logger.info({
+      event: 'consumer.queue.listening',
+      queueName
+    }, `[Consumer] Listening on queue: ${queueName}`);
   }
 
   async #handleReceivedMessage(message, queueName) {
@@ -51,15 +68,38 @@ class ImageProcessingConsumer {
 
     const retryCount = message.properties.headers?.['x-retry-count'] || 0;
     const partition = message.properties.headers?.['x-partition'];
+
+    const messageLogger = logger.child({
+      messageId: message.properties.messageId,
+      correlationId: message.properties.correlationId,
+      deliveryTag: message.fields.deliveryTag,
+      queueName,
+      partition,
+      retryCount
+    });
+
+    messageLogger.debug({
+      event: 'rabbitmq.message.received',
+      routingKey: message.fields.routingKey,
+      exchange: message.fields.exchange,
+      redelivered: message.fields.redelivered
+    }, 'Received message from RabbitMQ');
+
     let event;
 
     try {
       event = JSON.parse(message.content.toString());
       const { eventId, payload } = event;
 
-      console.log(
-        `[${queueName}] Processing imageId: ${payload.imageId} (retry: ${retryCount}/${this.#MAX_RETRIES})`
-      );
+      messageLogger.info({
+        event: 'event.processing.started',
+        eventType: event.eventType,
+        eventId,
+        imageId: payload.imageId,
+        userId: payload.userId,
+        retryCount,
+        maxRetries: this.#MAX_RETRIES
+      }, `[${queueName}] Processing imageId: ${payload.imageId} (retry: ${retryCount}/${this.#MAX_RETRIES})`);
 
       // Execute use case
       const result = await this.processImageUseCase.execute(payload);
@@ -71,24 +111,59 @@ class ImageProcessingConsumer {
         correlationId: eventId,
       });
 
+      logEventPublished(messageLogger, 'ImageProcessed', 'image.processed');
+
       // Acknowledge message on success
       this.#channel.ack(message);
-      console.log(`[${queueName}] ✓ Completed: ${payload.imageId}`);
+
+      messageLogger.info({
+        event: 'rabbitmq.message.acked',
+        imageId: payload.imageId,
+        processingTime: result.processingTime
+      }, `[${queueName}] ✓ Completed: ${payload.imageId}`);
     } catch (error) {
       // Handle error with retry logic
       const parsedEvent = event || JSON.parse(message.content.toString());
+      const isRetryable = this.#isRetryableError(error);
 
-      if (this.#isRetryableError(error) && retryCount < this.#MAX_RETRIES) {
+      messageLogger.error({
+        event: 'event.processing.failed',
+        error: {
+          type: error.constructor?.name || 'Error',
+          message: error.message,
+          code: error.code,
+          stack: error.stack
+        },
+        imageId: parsedEvent.payload?.imageId,
+        retryable: isRetryable,
+        retryCount,
+        maxRetries: this.#MAX_RETRIES
+      }, `Processing failed: ${error.message}`);
+
+      if (isRetryable && retryCount < this.#MAX_RETRIES) {
         // Retry with backoff
         const delay = this.#calculateBackoff(retryCount);
-        console.log(`[Retry ${retryCount + 1}/${this.#MAX_RETRIES}] Requeuing after ${delay}ms`);
+
+        messageLogger.warn({
+          event: 'message.retry.scheduled',
+          retryCount: retryCount + 1,
+          maxRetries: this.#MAX_RETRIES,
+          delayMs: delay,
+          imageId: parsedEvent.payload?.imageId
+        }, `[Retry ${retryCount + 1}/${this.#MAX_RETRIES}] Requeuing after ${delay}ms`);
 
         await this.#requeueWithDelay(parsedEvent, partition, retryCount + 1, delay);
         this.#channel.ack(message); // ACK original
 
       } else {
         // Max retries exceeded or non-retryable error -> DLQ
-        console.error(`[DLQ] Message failed after ${retryCount} retries:`, error.message);
+        messageLogger.error({
+          event: 'message.moved_to_dlq',
+          reason: isRetryable ? 'max_retries_exceeded' : 'non_retryable_error',
+          retryCount,
+          imageId: parsedEvent.payload?.imageId,
+          errorMessage: error.message
+        }, `[DLQ] Message failed after ${retryCount} retries: ${error.message}`);
 
         // Publish error event
         await this.#publishEvent('image.failed', {
@@ -97,11 +172,19 @@ class ImageProcessingConsumer {
           errorCode: this.#determineErrorCode(error),
           retryCount: retryCount,
           timestamp: new Date().toISOString(),
-          userId: payload.userId,
+          userId: parsedEvent.payload?.userId,
         });
+
+        logEventPublished(messageLogger, 'ProcessingFailed', 'image.failed');
 
         // NACK without requeue -> goes to DLQ via DLX
         this.#channel.nack(message, false, false);
+
+        messageLogger.info({
+          event: 'rabbitmq.message.nacked',
+          requeue: false,
+          destination: 'DLQ'
+        }, 'Message NACK\'ed and sent to DLQ');
       }
     }
   }
