@@ -6,6 +6,14 @@ import {
   logGeminiRequestFailed
 } from '../logger/image-processing-logger.js';
 import crypto from 'crypto';
+import {
+  geminiRequestDuration,
+  geminiRequestsTotal,
+  geminiRateLimitHits,
+  geminiTokensUsed,
+  geminiActiveRequests,
+  geminiErrorsByType,
+} from '../metrics/gemini.metrics.js';
 
 class GeminiService {
   constructor() {
@@ -71,6 +79,10 @@ class GeminiService {
   async processImage(imageBuffer, style) {
     const requestId = crypto.randomUUID();
     const geminiLogger = logger.child({ requestId, service: 'gemini-ai' });
+    const startTime = Date.now();
+
+    // Increment active requests gauge
+    geminiActiveRequests.inc();
 
     try {
       if (!this.model) {
@@ -88,7 +100,6 @@ class GeminiService {
       logGeminiRequestStarted(geminiLogger, style, imageBuffer.length);
 
       const prompt = `Transform this image into a ${style}. Return the edited image.`;
-      const startTime = Date.now();
 
       const result = await this.model.generateContent({
         contents: [
@@ -109,19 +120,34 @@ class GeminiService {
 
       const resp = await result.response;
       const duration = Date.now() - startTime;
+      const durationSeconds = duration / 1000;
       const { imageBase64 } = GeminiService.extractTextAndImage(resp);
 
       if (imageBase64) {
+        // Record success metrics
+        geminiRequestDuration.observe({ style, status: 'success' }, durationSeconds);
+        geminiRequestsTotal.inc({ style, status: 'success' });
+
+        // Record token usage if available
+        if (resp.usageMetadata?.totalTokenCount) {
+          geminiTokensUsed.observe({ style }, resp.usageMetadata.totalTokenCount);
+        }
+
         geminiLogger.info({
           event: 'gemini.request.completed',
           duration,
           style,
           model: this.modelName,
-          hasImage: true
+          hasImage: true,
+          tokensUsed: resp.usageMetadata?.totalTokenCount
         }, `Gemini AI processing completed in ${duration}ms`);
 
         return Buffer.from(imageBase64, 'base64');
       } else {
+        // Record as success but with warning
+        geminiRequestDuration.observe({ style, status: 'success' }, durationSeconds);
+        geminiRequestsTotal.inc({ style, status: 'success' });
+
         geminiLogger.warn({
           event: 'gemini.no_image_returned',
           duration,
@@ -132,21 +158,45 @@ class GeminiService {
         return imageBuffer;
       }
     } catch (error) {
-      // Mark retryable errors
-      if (
+      const duration = Date.now() - startTime;
+      const durationSeconds = duration / 1000;
+      const errorType = error.constructor?.name || 'Error';
+
+      // Detect rate limit errors
+      const isRateLimit =
         error.message?.includes('RATE_LIMIT') ||
         error.message?.includes('RESOURCE_EXHAUSTED') ||
         error.message?.includes('429') ||
         error.code === 'RATE_LIMIT_EXCEEDED' ||
-        error.code === 'RESOURCE_EXHAUSTED'
-      ) {
+        error.code === 'RESOURCE_EXHAUSTED';
+
+      if (isRateLimit) {
+        // Mark retryable and record rate limit metrics
         error.retryable = true;
         error.code = 'RATE_LIMIT_EXCEEDED';
+
+        geminiRateLimitHits.inc({ style });
+        geminiRequestsTotal.inc({ style, status: 'rate_limited' });
+        geminiRequestDuration.observe({ style, status: 'rate_limited' }, durationSeconds);
+
+        geminiLogger.warn({
+          event: 'gemini.rate_limit.hit',
+          style,
+          duration
+        }, 'Gemini API rate limit hit');
+      } else {
+        // Record general error metrics
+        geminiRequestsTotal.inc({ style, status: 'error' });
+        geminiRequestDuration.observe({ style, status: 'error' }, durationSeconds);
+        geminiErrorsByType.inc({ error_type: errorType, style });
       }
 
       logGeminiRequestFailed(geminiLogger, error, style);
 
       throw new Error(`GEMINI_TIMEOUT: ${error.message}`);
+    } finally {
+      // Decrement active requests gauge
+      geminiActiveRequests.dec();
     }
   }
 

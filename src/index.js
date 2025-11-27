@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import imageProcessingConsumer from './infrastructure/consumers/image-processing.consumer.js';
 import rabbitmqService from './infrastructure/services/rabbitmq.service.js';
 import { logger } from './infrastructure/logger/pino.config.js';
+import { MetricsServer } from './infrastructure/metrics/metrics-server.js';
 
 dotenv.config();
 
@@ -15,6 +16,19 @@ async function startWorker() {
   }, '🚀 AI Digester starting...');
 
   try {
+    // Start metrics server (lightweight HTTP server for /metrics and /health)
+    const metricsPort = process.env.METRICS_PORT || 9090;
+    const metricsServer = new MetricsServer(metricsPort);
+    await metricsServer.start();
+
+    // Store metricsServer in global scope for shutdown
+    global.metricsServer = metricsServer;
+
+    logger.info({
+      event: 'worker.metrics.ready',
+      port: metricsPort
+    }, '📊 Metrics server ready');
+
     // Connect to RabbitMQ
     logger.info({
       event: 'worker.rabbitmq.connecting'
@@ -39,8 +53,11 @@ async function startWorker() {
 
     logger.info({
       event: 'worker.startup.completed',
-      status: 'ready'
+      status: 'ready',
+      metricsEndpoint: `http://localhost:${metricsPort}/metrics`,
+      healthEndpoint: `http://localhost:${metricsPort}/health`
     }, '🎉 AI Digester ready. Waiting for messages...');
+
   } catch (error) {
     logger.fatal({
       event: 'worker.startup.failed',
@@ -54,7 +71,7 @@ async function startWorker() {
   }
 }
 
-// Graceful shutdown
+// Graceful shutdown handlers
 process.on('SIGTERM', async () => {
   logger.info({
     event: 'worker.shutdown.initiated',
@@ -68,7 +85,15 @@ process.on('SIGTERM', async () => {
     if (imageProcessingConsumer.stop) {
       await imageProcessingConsumer.stop();
     }
-    await rabbitmqService.close();
+
+    if (rabbitmqService.close) {
+      await rabbitmqService.close();
+    }
+
+    // Stop metrics server
+    if (global.metricsServer) {
+      await global.metricsServer.stop();
+    }
 
     logger.info({
       event: 'worker.shutdown.completed'
@@ -92,10 +117,21 @@ process.on('SIGINT', async () => {
   }, 'Received SIGINT, shutting down gracefully...');
 
   try {
+    // Wait for current processing to complete
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
     if (imageProcessingConsumer.stop) {
       await imageProcessingConsumer.stop();
     }
-    await rabbitmqService.close();
+
+    if (rabbitmqService.close) {
+      await rabbitmqService.close();
+    }
+
+    // Stop metrics server
+    if (global.metricsServer) {
+      await global.metricsServer.stop();
+    }
 
     logger.info({
       event: 'worker.shutdown.completed'
@@ -113,7 +149,7 @@ process.on('SIGINT', async () => {
 });
 
 // Uncaught errors
-process.on('uncaughtException', (error) => {
+process.on('uncaughtException', async (error) => {
   logger.fatal({
     event: 'worker.uncaught_exception',
     error: {
@@ -121,7 +157,17 @@ process.on('uncaughtException', (error) => {
       message: error.message,
       stack: error.stack
     }
-  }, `Uncaught exception: ${error.message}`);
+  }, 'Uncaught exception');
+
+  // Stop metrics server
+  if (global.metricsServer) {
+    try {
+      await global.metricsServer.stop();
+    } catch (e) {
+      // Ignore errors during emergency shutdown
+    }
+  }
+
   process.exit(1);
 });
 
@@ -130,8 +176,9 @@ process.on('unhandledRejection', (reason, promise) => {
     event: 'worker.unhandled_rejection',
     reason: String(reason),
     promise: String(promise)
-  }, `Unhandled promise rejection: ${reason}`);
+  }, 'Unhandled promise rejection');
 });
 
 // Start the worker
 startWorker();
+
