@@ -2,12 +2,19 @@ import rabbitmqService from '../services/rabbitmq.service.js';
 import processImageUseCase from '../../application/use-cases/process-image-from-event.usecase.js';
 import config from '../config/env.js';
 import { logger } from '../logger/pino.config.js';
-import { logEventPublished } from '../logger/image-processing-logger.js';
+import {
+  rabbitmqMessagesConsumed,
+  rabbitmqMessageRetries,
+  rabbitmqMessagesToDLQ,
+  rabbitmqActiveConsumers,
+  rabbitmqConsumerLag,
+  rabbitmqErrorsTotal,
+} from '../metrics/rabbitmq.metrics.js';
 
 class ImageProcessingConsumer {
   #channel;
-  #MAX_RETRIES = config.retry.maxRetries;
-  #EXCHANGE_NAME = 'pixpro.processing';
+  #MAX_RETRIES = config.retry.maxRetries || 3;
+  #EXCHANGE_NAME = config.rabbitmq.exchange || 'pixpro.processing';
 
   constructor() {
     this.rabbitmqService = rabbitmqService;
@@ -51,6 +58,10 @@ class ImageProcessingConsumer {
   }
 
   async #consumeFromQueue(queueName) {
+    // Extract partition number from queue name
+    const partitionMatch = queueName.match(/partition\.(\d+)/);
+    const partition = partitionMatch ? partitionMatch[1] : 'unknown';
+
     await this.#channel.consume(
       queueName,
       (message) => this.#handleReceivedMessage(message, queueName),
@@ -59,7 +70,8 @@ class ImageProcessingConsumer {
 
     logger.info({
       event: 'consumer.queue.listening',
-      queueName
+      queueName,
+      partition
     }, `[Consumer] Listening on queue: ${queueName}`);
   }
 
@@ -77,6 +89,9 @@ class ImageProcessingConsumer {
       partition,
       retryCount
     });
+
+    // Increment active consumers gauge for this partition
+    rabbitmqActiveConsumers.inc({ partition: String(partition) });
 
     messageLogger.debug({
       event: 'rabbitmq.message.received',
@@ -107,20 +122,32 @@ class ImageProcessingConsumer {
       // Publish success event
       await this.#publishEvent('ImageProcessed', {
         ...result,
-        userId: payload.userId,
-        correlationId: eventId,
+        imageId: payload.imageId,
+        userId: payload.userId
       });
 
-      logEventPublished(messageLogger, 'ImageProcessed', 'image.processed');
+      // Calculate consumer lag if timestamp is available
+      if (message.properties.timestamp) {
+        const lag = (Date.now() - message.properties.timestamp) / 1000;
+        rabbitmqConsumerLag.observe({ partition: String(partition) }, lag);
+      }
 
       // Acknowledge message on success
       this.#channel.ack(message);
+
+      // Record success metrics
+      rabbitmqMessagesConsumed.inc({
+        event_type: 'ImageUploaded',
+        status: 'success',
+        partition: String(partition)
+      });
 
       messageLogger.info({
         event: 'rabbitmq.message.acked',
         imageId: payload.imageId,
         processingTime: result.processingTime
       }, `[${queueName}] ✓ Completed: ${payload.imageId}`);
+
     } catch (error) {
       // Handle error with retry logic
       const parsedEvent = event || JSON.parse(message.content.toString());
@@ -135,10 +162,9 @@ class ImageProcessingConsumer {
           stack: error.stack
         },
         imageId: parsedEvent.payload?.imageId,
-        retryable: isRetryable,
-        retryCount,
-        maxRetries: this.#MAX_RETRIES
-      }, `Processing failed: ${error.message}`);
+        isRetryable,
+        retryCount
+      }, `Error processing image: ${error.message}`);
 
       if (isRetryable && retryCount < this.#MAX_RETRIES) {
         // Retry with backoff
@@ -154,6 +180,17 @@ class ImageProcessingConsumer {
 
         await this.#requeueWithDelay(parsedEvent, partition, retryCount + 1, delay);
         this.#channel.ack(message); // ACK original
+
+        // Record retry metrics
+        rabbitmqMessageRetries.inc({
+          partition: String(partition),
+          retry_count: String(retryCount + 1)
+        });
+        rabbitmqMessagesConsumed.inc({
+          event_type: 'ImageUploaded',
+          status: 'retry',
+          partition: String(partition)
+        });
 
       } else {
         // Max retries exceeded or non-retryable error -> DLQ
@@ -175,17 +212,34 @@ class ImageProcessingConsumer {
           userId: parsedEvent.payload?.userId,
         });
 
-        logEventPublished(messageLogger, 'ProcessingFailed', 'image.failed');
+        const dlqReason = isRetryable ? 'max_retries_exceeded' : 'non_retryable_error';
+
+        // Record DLQ metrics
+        rabbitmqMessagesToDLQ.inc({
+          partition: String(partition),
+          reason: dlqReason
+        });
+        rabbitmqMessagesConsumed.inc({
+          event_type: 'ImageUploaded',
+          status: 'dlq',
+          partition: String(partition)
+        });
+        rabbitmqErrorsTotal.inc({
+          error_type: error.constructor?.name || 'ProcessingError',
+          operation: 'consume'
+        });
 
         // NACK without requeue -> goes to DLQ via DLX
         this.#channel.nack(message, false, false);
 
         messageLogger.info({
           event: 'rabbitmq.message.nacked',
-          requeue: false,
-          destination: 'DLQ'
+          imageId: parsedEvent.payload?.imageId
         }, 'Message NACK\'ed and sent to DLQ');
       }
+    } finally {
+      // Decrement active consumers gauge
+      rabbitmqActiveConsumers.dec({ partition: String(partition) });
     }
   }
 
@@ -205,7 +259,12 @@ class ImageProcessingConsumer {
   }
 
   #calculateBackoff(retryCount) {
-    return config.retry.delays[retryCount] || config.retry.delays[config.retry.delays.length - 1];
+    const delays = [
+      config.retry.delay1 || 5000,
+      config.retry.delay2 || 15000,
+      config.retry.delay3 || 30000
+    ];
+    return delays[retryCount] || 30000;
   }
 
   async #requeueWithDelay(event, partition, newRetryCount, delay) {
@@ -274,7 +333,6 @@ class ImageProcessingConsumer {
     return 'UNKNOWN_ERROR';
   }
 
-
   async stop() {
     // Consumer will stop automatically when connection closes
     console.log('Stopping consumer...');
@@ -282,3 +340,4 @@ class ImageProcessingConsumer {
 }
 
 export default new ImageProcessingConsumer();
+

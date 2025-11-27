@@ -2,6 +2,11 @@ import amqp from 'amqplib';
 import config from '../config/env.js';
 import { setupRabbitMQInfrastructure } from './rabbitmq-setup.service.js';
 import { logger } from '../logger/pino.config.js';
+import {
+  rabbitmqMessagesPublished,
+  rabbitmqPublishDuration,
+  rabbitmqErrorsTotal,
+} from '../metrics/rabbitmq.metrics.js';
 
 class RabbitMQService {
   constructor() {
@@ -91,13 +96,38 @@ class RabbitMQService {
   }
 
   async publishToQueue(queueName, message) {
+    const startTime = Date.now();
+    const eventType = message.eventType || 'unknown';
+
     try {
       await this.channel.assertQueue(queueName, { durable: true });
       this.channel.sendToQueue(queueName, Buffer.from(JSON.stringify(message)), {
         persistent: true,
       });
+
+      // Record success metrics
+      const duration = (Date.now() - startTime) / 1000;
+      rabbitmqPublishDuration.observe({ event_type: eventType }, duration);
+      rabbitmqMessagesPublished.inc({ event_type: eventType, status: 'success' });
+
+      logger.debug({
+        event: 'rabbitmq.publish.success',
+        queueName,
+        eventType,
+        duration: duration * 1000
+      }, `Published message to queue ${queueName}`);
     } catch (error) {
-      console.error(`Error publishing to queue ${queueName}:`, error.message);
+      // Record error metrics
+      rabbitmqMessagesPublished.inc({ event_type: eventType, status: 'error' });
+      rabbitmqErrorsTotal.inc({ error_type: error.constructor?.name || 'PublishError', operation: 'publish' });
+
+      logger.error({
+        event: 'rabbitmq.publish.error',
+        queueName,
+        eventType,
+        error: { message: error.message }
+      }, `Error publishing to queue ${queueName}: ${error.message}`);
+
       throw error;
     }
   }
@@ -105,28 +135,35 @@ class RabbitMQService {
   async consumeFromQueue(queueName, handler) {
     try {
       await this.channel.assertQueue(queueName, { durable: true });
-      await this.channel.prefetch(1);
-
       await this.channel.consume(queueName, handler, { noAck: false });
+
+      logger.info({
+        event: 'rabbitmq.consume.started',
+        queueName
+      }, `Started consuming from queue: ${queueName}`);
     } catch (error) {
-      console.error(`Error consuming from queue ${queueName}:`, error.message);
+      logger.error({
+        event: 'rabbitmq.consume.error',
+        queueName,
+        error: { message: error.message }
+      }, `Error consuming from queue ${queueName}: ${error.message}`);
+
       throw error;
     }
   }
 
   getChannel() {
+    if (!this.channel) {
+      throw new Error('RabbitMQ channel not initialized. Call connect() first.');
+    }
     return this.channel;
   }
 
   async close() {
     try {
-      logger.info({
-        event: 'rabbitmq.closing'
-      }, 'Closing RabbitMQ connection...');
-
       if (this.channel) {
         await this.channel.close();
-        logger.debug({ event: 'rabbitmq.channel.closed' }, 'RabbitMQ channel closed');
+        logger.info({ event: 'rabbitmq.channel.closed' }, 'RabbitMQ channel closed successfully');
       }
       if (this.connection) {
         await this.connection.close();
@@ -145,3 +182,4 @@ class RabbitMQService {
 }
 
 export default new RabbitMQService();
+

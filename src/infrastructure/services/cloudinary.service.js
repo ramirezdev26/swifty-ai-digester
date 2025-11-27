@@ -1,17 +1,17 @@
 import cloudinary from '../config/cloudinary.config.js';
 import { logger } from '../logger/pino.config.js';
 import {
-  logCloudinaryUploadStarted,
-  logCloudinaryUploadFailed
-} from '../logger/image-processing-logger.js';
+  cloudinaryUploadDuration,
+  cloudinaryUploadsTotal,
+  cloudinaryUploadSize,
+  cloudinaryErrorsByType,
+  cloudinaryUploadSpeed,
+} from '../metrics/cloudinary.metrics.js';
 
 class CloudinaryService {
   async uploadImage(buffer, options = {}) {
-    const publicId = options.public_id || `processed-${Date.now()}`;
-    const uploadLogger = logger.child({ publicId, service: 'cloudinary' });
-
-    logCloudinaryUploadStarted(uploadLogger, buffer.length, publicId);
     const startTime = Date.now();
+    const uploadLogger = logger.child({ service: 'cloudinary' });
 
     try {
       return new Promise((resolve, reject) => {
@@ -23,8 +23,11 @@ class CloudinaryService {
             ...options,
           },
           (error, result) => {
+            const duration = Date.now() - startTime;
+
             if (error) {
-              const duration = Date.now() - startTime;
+              const durationSeconds = duration / 1000;
+
               uploadLogger.error({
                 event: 'cloudinary.upload.callback.error',
                 duration,
@@ -34,15 +37,27 @@ class CloudinaryService {
                   type: error.constructor?.name
                 }
               }, 'Cloudinary upload callback error');
+
+              cloudinaryUploadDuration.observe({ status: 'error' }, durationSeconds);
+              cloudinaryUploadsTotal.inc({ status: 'error' });
+              cloudinaryErrorsByType.inc({ error_type: error.constructor?.name || 'CloudinaryError' });
+
               reject(error);
             } else {
-              const duration = Date.now() - startTime;
+              const durationSeconds = duration / 1000;
+
+              cloudinaryUploadDuration.observe({ status: 'success' }, durationSeconds);
+              cloudinaryUploadsTotal.inc({ status: 'success' });
+              cloudinaryUploadSize.observe(buffer.length);
+
+              const uploadSpeedBytesPerSecond = buffer.length / durationSeconds;
+              cloudinaryUploadSpeed.observe(uploadSpeedBytesPerSecond);
+
               uploadLogger.info({
                 event: 'cloudinary.upload.completed',
                 duration,
-                url: result.secure_url,
                 publicId: result.public_id,
-                format: result.format,
+                url: result.secure_url,
                 bytes: result.bytes,
                 width: result.width,
                 height: result.height
@@ -53,9 +68,8 @@ class CloudinaryService {
                 secure_url: result.secure_url,
                 url: result.url,
                 bytes: result.bytes,
-                format: result.format,
                 width: result.width,
-                height: result.height,
+                height: result.height
               });
             }
           }
@@ -64,10 +78,26 @@ class CloudinaryService {
         uploadStream.end(buffer);
       });
     } catch (error) {
-      logCloudinaryUploadFailed(uploadLogger, error, publicId);
-      throw new Error(`CLOUDINARY_TIMEOUT: ${error.message}`);
+      const duration = Date.now() - startTime;
+      const durationSeconds = duration / 1000;
+
+      uploadLogger.error({
+        event: 'cloudinary.upload.failed',
+        error: {
+          type: error.constructor.name,
+          message: error.message,
+          code: error.http_code
+        }
+      }, 'Cloudinary upload failed');
+
+      cloudinaryUploadDuration.observe({ status: 'error' }, durationSeconds);
+      cloudinaryUploadsTotal.inc({ status: 'error' });
+      cloudinaryErrorsByType.inc({ error_type: error.constructor.name });
+
+      throw error;
     }
   }
 }
 
 export default new CloudinaryService();
+
